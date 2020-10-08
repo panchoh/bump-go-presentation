@@ -1,0 +1,408 @@
+#+Title: Minimal Maintenance: Bump Go
+#+email: pancho.horrillo@bbva.com
+#+Author: pancho horrillo
+#+Date: 2020-10-08
+#+Startup: inlineimages overview
+
+* Welcome!
+- Review: /Minimal Maintenance:/ /Bump Go/
+
+  Héctor Hurtado & pancho horrillo
+
+* Introducing GitHub Actions
+- Introducing GitHub Actions: https://github.com/features/actions
+
+- Native CI/CD for the GitHub platform
+
+- Similar to other solutions like CircleCI, Travis...
+
+- YAML YAML YAML
+
+- Marketplace: https://github.com/marketplace?type=actions
+
+- Runs loads on Azure VMs
+
+- Supports GNU/Linux, Windows®, macOS
+
+- Free for Open Source software projects
+
+- Image generation process is public: https://github.com/actions/virtual-environments
+
+* Keeping the Go compiler up to date
+- Keeping the Go compiler up to date
+ 
+Step #0: Make the version you use *explicit* by storing it into a *file*
+
+file: .github/versions/go
+#+begin_src
+1.14
+#+end_src
+
+- When building the project, honor the version stored in the file
+
+file: .workflows/build.yml
+#+begin_src
+...
+- name: Load Go version
+  id: go-version
+  run: |
+    echo ::set-output name=go-version::$(<.github/versions/go)
+
+- uses: actions/setup-go@v2
+  id: setup-go
+  with:
+    go-version: ${{ steps.go-version.outputs.go-version }}
+...
+#+end_src
+
+* Keeping the Go compiler up to date
+- Keeping the Go compiler up to date
+ 
+Step #1: Periodically check if an updated version of Go is available
+	   (and create a PR with the updated version file)
+
+* Naive approach to Step #1:
+- Naive approach to Step #1
+
+file: .workflows/github/bump-go-inline.yml (edited)
+#+begin_src
+name: Bump Go - inline
+on:
+  schedule:
+    - cron: 00 9 * * *
+jobs:
+  bump-go:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - name: Ensure we are using the latest Go
+        id: bump-go
+        run: |
+          go_version_filepath=.github/versions/go
+
+          curl --silent --fail 'https://golang.org/dl/?mode=json'         \
+          | jq --raw-output --exit-status '.[0].version | sub("^go"; "")' \
+          > $go_version_filepath
+
+          echo ::set-output name=go-version::$(< $go_version_filepath)
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v3
+        with:
+          title: Bump Go version
+          commit-message: Bump Go version to ${{ steps.bump-go.outputs.go-version }}
+          branch: bump-go-inline/patch
+#+end_src
+
+* Pros and cons of the naive approach
+- Pros and Cons of the naive approach
+ 
+- Pro: straightforward to implement
+just copy and paste the workflow into your project
+
+- Pro: great for prototyping
+
+- Con: when updates to the workflow are needed,
+the changes have to be distributed to every project that uses it (ahem...)
+
+* Native approach to Step #1
+- Native approach to Step #1
+
+- Package the workflow as a GitHub Action
+
+- Two flavors available (at the time of writing):
+
+  + Docker                                   <- maybe overkill for our use case
+   
+  + JavaScript / TypeScript + node.js        <- Shiny!  Let's try this one!
+
+* Native approach to Step #1
+- Native approach to Step #1 - TypeScript version
+
+- Start with https://github.com/actions/typescript-action as a template
+
+- Customize /action.yml/, /package.json/, /__tests__/*/, /src/*/ and /README.md/
+
+- Optionally publish the action into the marketplace
+
+* Native approach to Step #1 - TypeScript version
+- Native approach to Step #1 - TypeScript version
+
+Our implementation: https://github.com/BBVA/bump-go/tree/typescript
+
+file: action.yml (edited)
+#+begin_src
+name: 'Bump Go'
+description: 'Bump the Go compiler version to the most up-to-date release'
+inputs:
+  go-version-filepath:
+    description: 'Path to the file containing the Go version to build your project'
+    required: false
+    default: '.github/versions/go'
+outputs:
+  go-version:
+    description: 'Latest current Go version'
+runs:
+  using: 'node12'
+  main: 'dist/index.js'
+#+end_src
+
+* Native approach to Step #1 - TypeScript version
+- Native approach to Step #1 - TypeScript version
+
+file: src/main.ts (edited)
+#+begin_src
+import {run} from './bump-go'
+
+run()
+#+end_src
+
+* Native approach to Step #1 - TypeScript version
+- Native approach to Step #1 - TypeScript version
+
+file: src/bump-go.ts (edited)
+#+begin_src
+import * as core from '@actions/core'
+import * as gover from './go-version'
+import {promises as fs} from 'fs'
+
+export async function run(): Promise<void> {
+  try {
+    const goVersionFilePath = core.getInput('go-version-filepath')
+    const currentGoVersion = await gover.getCurrent()
+    await fs.writeFile(goVersionFilePath, `${currentGoVersion}\n`, 'utf8')
+    core.setOutput('go-version', currentGoVersion)
+  } catch (error) {
+    core.setFailed(error.message)
+  }
+}
+#+end_src
+
+* Native approach to Step #1 - TypeScript version
+- Native approach to Step #1 - TypeScript version
+
+file: src/go-version.ts (edited)
+#+begin_src
+import * as httpm from '@actions/http-client'
+
+interface IGoVersion {
+  version: string
+}
+
+const dlUrl = 'https://golang.org/dl/?mode=json'
+
+export async function getCurrent(): Promise<string> {
+  const http: httpm.HttpClient = new httpm.HttpClient('Bump Go')
+  const request = await http.getJson<IGoVersion[]>(dlUrl)
+
+  if (!request.result) {
+    throw new Error(`Go download URL did not yield any results`)
+  }
+
+  try {
+    // First result is current Go release.  Drop 'go' prefix from version.
+    return request.result[0].version.substr(2)
+  } catch (error) {
+    throw new Error(`Error extracting current Go version: ${error.message}`)
+  }
+}
+#+end_src
+
+* Native approach to Step #1 - TypeScript version - building and testing
+- Native approach to Step #1 - TypeScript version - building and testing
+
+- Run '*npm install && npm run all*' to install deps, test and build
+
+- Output is stored on /dist/index.js/, which matches what action.yml expects:
+
+file: action.yml (edited)
+#+begin_src
+...
+runs:
+  using: 'node12'
+  main: 'dist/index.js'
+#+end_src
+
+- /dist/index.js/ *must be added* to the repo, it's not built by the Actions engine automatically
+
+- Note that the *go-version* file must exist prior to running this action in your project
+ 
+- To test locally:
+#+begin_src
+echo 1.0 > go-version
+env INPUT_GO-VERSION=./go-version node dist/index.js
+::set-output name=go-version::1.15.2
+#+end_src
+
+* Native approach to Step #1 - TypeScript version - notes
+- Native approach to Step #1 - TypeScript version - notes
+
+- *NOTE*: Creating the PR is handled by a different action, e.g: /peter-evans/create-pull-request/, that must be *explicitly added* to the workflow
+
+- A big shout out to *pixeliko* and *CesarGallego* for helping us understand how TypeScript works
+
+* Native approach to Step #1 - TypeScript version - Pros and Cons
+- Native approach to Step #1 - TypeScript version - Pros and Cons
+
+- Pro: Native solution
+
+- Con: Surprisingly high maintenance
+ 
+  - Over the course of three months, *dependabot* detected a number of security issues with the /dependencies/
+
+  - *dependabot* provided straightforward PRs for most updates, *but not all*
+
+  - using '*npm audit*' to fix the rest revealed a bunch of high risk
+    vulnerabilities, as well as a high volume (~1K) of low risk vulnerabilities in the
+    dependencies
+
+* Native approach to Step #1 - A New Hope
+- Native approach to Step #1 - A New Hope
+
+- I recently found that in August a new flavor of GitHub Actions was released:
+
+  *composite run steps*
+ 
+  https://docs.github.com/en/free-pro-team@latest/actions/creating-actions/creating-a-composite-run-steps-action
+ 
+- We can get the *simplicity* of the naive approach
+  with the *ease of deployment* of the native one
+
+* Native approach to Step #1 - A New Hope
+- Native approach to Step #1 - A New Hope
+
+- Quickly reimplemented *bump-go* with this flavor:
+
+file: action.yml (edited)
+#+begin_src
+name: 'Bump Go'
+description: 'Ensure Go is up-to-date'
+inputs:
+  go-version-filepath:
+    description: 'Path to the file containing the Go version to build your project'
+    required: false
+    default: '.github/versions/go'
+outputs:
+  go-version:
+    description: 'Latest current Go version'
+    value: ${{ steps.bump-go.outputs.go-version }}
+runs:
+  using: "composite"
+  steps:
+    - name: Ensure Go is up-to-date
+      id: bump-go
+      shell: bash
+      run: |
+        go_version_filepath="${{ inputs.go-version-filepath }}"
+        curl --silent --fail 'https://golang.org/dl/?mode=json'         \
+        | jq --raw-output --exit-status '.[0].version | sub("^go"; "")' \
+        > $go_version_filepath
+        echo ::set-output name=go-version::$(< $go_version_filepath)
+
+#+end_src
+
+* Native approach to Step #1 - Hope is Crushed
+- Native approach to Step #1 - Hope is Crushed
+
+- While trying to simplify the integration with actions/setup-go, I came across this:
+
+  https://github.com/actions/setup-go/issues/23#issuecomment-635200502
+ 
+  "/hazcod/: I extract the Go version to use out of my *Docker containers*,
+  [...] It works with *dependabot* for automatic updates that way"
+
+- OMFG, this guy is subverting *dependabot*'s support for *Dockerfiles* to get the
+  job done.  Genius!
+ 
+- No need for a GitHub Action after all
+
+- Bye bye, *Bump Go*.  Thanks for all the fish!
+
+* Leveraging dependabot to do the work for us
+- Leveraging dependabot to do the work for us
+
+file: .github/go/Dockerfile
+#+begin_src
+FROM golang:1.12
+#+end_src
+
+file: .github/dependabot.yml
+#+begin_src
+version: 2
+updates:
+  - package-ecosystem: "docker"
+    directory: "/.github/go"
+    schedule:
+      interval: "daily"
+#+end_src
+
+file: .github/workflows/build.yml
+#+begin_src
+...
+  - name: Load Go version
+    id: go-version
+    run: |
+      echo ::set-output name=go-version::$(sed 's/^.*://' .github/go/Dockerfile)
+
+  - uses: actions/setup-go@v2
+    with:
+      go-version: ${{ steps.go-version.outputs.go-version }}
+...
+#+end_src
+
+* Dependabot also updates Go dependencies
+- Dependabot also updates Go dependencies
+
+file: .github/dependabot.yml
+#+begin_src
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "daily"
+#+end_src
+
+- SemVer stability score
+https://dependabot.com/compatibility-score/
+
+[[file:images/semver-badge.png]]
+
+"Dependabot has updated uglifier between SemVer compatible versions 5423 times
+across 1279 projects so far.  98% of those updates passed CI."
+
+Thanks to *nilp0inter* for finding about this!
+
+* Dependabot also updates GitHub Actions
+- Dependabot also updates GitHub Actions
+
+file: .github/dependabot.yml
+#+begin_src
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+#+end_src
+
+* Next Steps
+- Next Steps
+
+- Minimal Maintenance lives on!
+
+  In progress:
+
+  - *sign-and-go* GitHub Action for signing releases automatically
+
+  - procedure to minimize the work to produce *release notes* for the releases,
+    leveraging semantic commit messages (thanks, *pixeliko*!)
+
+- Possible experiment: deploy *dependabot* on premise
+
+  https://github.com/dependabot/dependabot-core
+
+* The End
+- The End
+
+Thanks for coming!
